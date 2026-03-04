@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { describe, it, expect } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
@@ -6,7 +8,9 @@ import {
   auditPostCompactionReads,
   extractReadPaths,
   formatAuditWarning,
+  getSessionFileOffset,
   isPostCompactionAuditEnabled,
+  readSessionMessages,
   resolveRequiredReads,
 } from "./post-compaction-audit.js";
 
@@ -44,7 +48,7 @@ describe("auditPostCompactionReads", () => {
   });
 
   it("fails with custom required reads when file missing", () => {
-    const reads = [];
+    const reads: string[] = [];
     const result = auditPostCompactionReads(reads, WORKSPACE, ["SOUL.md"]);
     expect(result.passed).toBe(false);
     expect(result.missingPatterns).toContain("SOUL.md");
@@ -85,13 +89,13 @@ describe("resolveRequiredReads", () => {
 });
 
 describe("isPostCompactionAuditEnabled", () => {
-  it("defaults to true when no config provided", () => {
-    expect(isPostCompactionAuditEnabled()).toBe(true);
+  it("defaults to false (opt-in) when no config provided", () => {
+    expect(isPostCompactionAuditEnabled()).toBe(false);
   });
 
-  it("returns true when enabled is not set", () => {
+  it("returns false when config block present but enabled not set", () => {
     const cfg = { hooks: { postCompactionAudit: {} } } as unknown as OpenClawConfig;
-    expect(isPostCompactionAuditEnabled(cfg)).toBe(true);
+    expect(isPostCompactionAuditEnabled(cfg)).toBe(false);
   });
 
   it("returns false when explicitly disabled", () => {
@@ -106,6 +110,79 @@ describe("isPostCompactionAuditEnabled", () => {
       hooks: { postCompactionAudit: { enabled: true } },
     } as unknown as OpenClawConfig;
     expect(isPostCompactionAuditEnabled(cfg)).toBe(true);
+  });
+});
+
+describe("readSessionMessages with byte offset", () => {
+  const tmpDir = os.tmpdir();
+
+  it("reads only messages after the given byte offset", () => {
+    const file = path.join(tmpDir, `test-audit-offset-${Date.now()}.jsonl`);
+    const preMsg = JSON.stringify({
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [{ type: "tool_use", name: "read", input: { file_path: "WORKFLOW_AUTO.md" } }],
+      },
+    });
+    const postMsg = JSON.stringify({
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [{ type: "tool_use", name: "read", input: { file_path: "SOUL.md" } }],
+      },
+    });
+
+    try {
+      fs.writeFileSync(file, preMsg + "\n");
+      const offset = fs.statSync(file).size;
+      fs.appendFileSync(file, postMsg + "\n");
+
+      const messages = readSessionMessages(file, offset);
+      const paths = messages.flatMap((m) =>
+        Array.isArray(m.content)
+          ? (m.content as Array<{ type: string; name?: string; input?: Record<string, unknown> }>)
+              .filter((b) => b.type === "tool_use" && b.name === "read")
+              .map((b) => b.input?.file_path as string)
+          : [],
+      );
+
+      expect(paths).toContain("SOUL.md");
+      expect(paths).not.toContain("WORKFLOW_AUTO.md");
+    } finally {
+      fs.unlinkSync(file);
+    }
+  });
+
+  it("returns empty array when nothing written after offset", () => {
+    const file = path.join(tmpDir, `test-audit-empty-${Date.now()}.jsonl`);
+    try {
+      fs.writeFileSync(
+        file,
+        JSON.stringify({ type: "message", message: { role: "assistant", content: [] } }) + "\n",
+      );
+      const offset = fs.statSync(file).size;
+      const messages = readSessionMessages(file, offset);
+      expect(messages).toHaveLength(0);
+    } finally {
+      fs.unlinkSync(file);
+    }
+  });
+});
+
+describe("getSessionFileOffset", () => {
+  it("returns file size for existing file", () => {
+    const file = path.join(os.tmpdir(), `test-offset-${Date.now()}.jsonl`);
+    try {
+      fs.writeFileSync(file, "hello\n");
+      expect(getSessionFileOffset(file)).toBe(6);
+    } finally {
+      fs.unlinkSync(file);
+    }
+  });
+
+  it("returns 0 for missing file", () => {
+    expect(getSessionFileOffset("/nonexistent/path/file.jsonl")).toBe(0);
   });
 });
 

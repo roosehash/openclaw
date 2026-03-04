@@ -28,10 +28,11 @@ export function resolveRequiredReads(cfg?: OpenClawConfig): (string | RegExp)[] 
 
 /**
  * Check whether post-compaction audit is enabled.
- * Defaults to true if not explicitly configured.
+ * Defaults to false — opt-in only, since default requiredReads reference
+ * WORKFLOW_AUTO.md which many workspaces don't use.
  */
 export function isPostCompactionAuditEnabled(cfg?: OpenClawConfig): boolean {
-  return cfg?.hooks?.postCompactionAudit?.enabled !== false;
+  return cfg?.hooks?.postCompactionAudit?.enabled === true;
 }
 
 /**
@@ -71,20 +72,44 @@ export function auditPostCompactionReads(
 }
 
 /**
- * Read messages from a session JSONL file.
- * Returns messages from the last N lines (default 100).
+ * Read messages from a session JSONL file, starting from a specific byte offset.
+ * Only reads content written AFTER the given offset (i.e., post-compaction activity).
+ * If offset is undefined or 0, reads the last maxLines lines as a fallback.
  */
 export function readSessionMessages(
   sessionFile: string,
+  fromByteOffset?: number,
   maxLines = 100,
 ): Array<{ role: string; content: unknown }> {
   if (!fs.existsSync(sessionFile)) {
     return [];
   }
   try {
-    const recentLines = fs.readFileSync(sessionFile, "utf-8").trim().split("\n").slice(-maxLines);
+    let text: string;
+    if (fromByteOffset !== undefined && fromByteOffset > 0) {
+      // Read only bytes written after the compaction boundary
+      const stat = fs.statSync(sessionFile);
+      const readLength = stat.size - fromByteOffset;
+      if (readLength <= 0) {
+        return [];
+      }
+      const buf = Buffer.alloc(readLength);
+      const fd = fs.openSync(sessionFile, "r");
+      try {
+        fs.readSync(fd, buf, 0, readLength, fromByteOffset);
+      } finally {
+        fs.closeSync(fd);
+      }
+      text = buf.toString("utf-8");
+    } else {
+      // Fallback: last N lines (no offset known)
+      text = fs.readFileSync(sessionFile, "utf-8");
+      const lines = text.trim().split("\n");
+      text = lines.slice(-maxLines).join("\n");
+    }
+
     const messages: Array<{ role: string; content: unknown }> = [];
-    for (const line of recentLines) {
+    for (const line of text.split("\n")) {
       try {
         const entry = JSON.parse(line);
         if (entry.type === "message" && entry.message) {
@@ -97,6 +122,18 @@ export function readSessionMessages(
     return messages;
   } catch {
     return [];
+  }
+}
+
+/**
+ * Get the current byte size of a session file.
+ * Used to record the compaction boundary before the next turn begins.
+ */
+export function getSessionFileOffset(sessionFile: string): number {
+  try {
+    return fs.statSync(sessionFile).size;
+  } catch {
+    return 0;
   }
 }
 

@@ -53,6 +53,7 @@ import {
   auditPostCompactionReads,
   extractReadPaths,
   formatAuditWarning,
+  getSessionFileOffset,
   isPostCompactionAuditEnabled,
   readSessionMessages,
   resolveRequiredReads,
@@ -67,8 +68,8 @@ import type { TypingController } from "./typing.js";
 
 const BLOCK_REPLY_SEND_TIMEOUT_MS = 15_000;
 
-/** Tracks sessions that have recently compacted and need a post-compaction audit on the next turn. */
-const pendingPostCompactionAudits = new Map<string, true>();
+/** Tracks sessions that have recently compacted, storing the session file byte offset at compaction time. */
+const pendingPostCompactionAudits = new Map<string, number>();
 
 export async function runReplyAgent(params: {
   commandBody: string;
@@ -687,9 +688,14 @@ export async function runReplyAgent(params: {
             // Silent failure — post-compaction context is best-effort
           });
 
-        // Schedule a post-compaction audit for the next turn (if enabled)
+        // Schedule a post-compaction audit for the next turn (if enabled).
+        // Capture the current file offset so the audit only inspects messages
+        // written AFTER this compaction boundary (prevents false negatives from
+        // pre-compaction reads still in the JSONL tail window).
         if (isPostCompactionAuditEnabled(cfg)) {
-          pendingPostCompactionAudits.set(sessionKey, true);
+          const sessionFile = activeSessionEntry?.sessionFile;
+          const offset = sessionFile ? getSessionFileOffset(sessionFile) : 0;
+          pendingPostCompactionAudits.set(sessionKey, offset);
         }
       }
 
@@ -706,14 +712,15 @@ export async function runReplyAgent(params: {
     }
 
     // Run post-compaction audit: check if agent read required files after last compaction
-    if (sessionKey && pendingPostCompactionAudits.get(sessionKey)) {
+    const pendingAuditOffset = sessionKey ? pendingPostCompactionAudits.get(sessionKey) : undefined;
+    if (sessionKey && pendingAuditOffset !== undefined) {
       pendingPostCompactionAudits.delete(sessionKey);
       try {
         const sessionFile = activeSessionEntry?.sessionFile;
         if (sessionFile) {
           const requiredReads = resolveRequiredReads(cfg);
           const audit = auditPostCompactionReads(
-            extractReadPaths(readSessionMessages(sessionFile)),
+            extractReadPaths(readSessionMessages(sessionFile, pendingAuditOffset)),
             process.cwd(),
             requiredReads,
           );
