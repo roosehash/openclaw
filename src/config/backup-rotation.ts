@@ -1,6 +1,11 @@
 import path from "node:path";
+import { resolveUserPath } from "../utils.js";
 
-export const CONFIG_BACKUP_COUNT = 5;
+export interface BackupOptions {
+  count?: number;
+  /** Absolute path to backup directory. Supports ~ expansion. Default: same directory as config file. */
+  dir?: string;
+}
 
 export interface BackupRotationFs {
   unlink: (path: string) => Promise<void>;
@@ -11,17 +16,37 @@ export interface BackupRotationFs {
 
 export interface BackupMaintenanceFs extends BackupRotationFs {
   copyFile: (from: string, to: string) => Promise<void>;
+  mkdir?: (path: string, options?: { recursive?: boolean }) => Promise<void>;
+}
+
+/**
+ * Resolves the backup base path, either in the same directory as the config file
+ * or in a custom directory if specified in options.
+ *
+ * When a custom dir is used, the backup filename includes the config file's basename
+ * to avoid collisions when multiple configs share the same backup directory.
+ * The dir is resolved via resolveUserPath (supports ~) and then made absolute.
+ */
+export function resolveBackupBase(configPath: string, options?: BackupOptions): string {
+  if (options?.dir) {
+    const resolvedDir = path.resolve(resolveUserPath(options.dir));
+    const basename = path.basename(configPath);
+    return path.join(resolvedDir, `${basename}.bak`);
+  }
+  return `${configPath}.bak`;
 }
 
 export async function rotateConfigBackups(
   configPath: string,
   ioFs: BackupRotationFs,
+  options?: BackupOptions,
 ): Promise<void> {
-  if (CONFIG_BACKUP_COUNT <= 1) {
+  const count = options?.count ?? 5;
+  if (count <= 1) {
     return;
   }
-  const backupBase = `${configPath}.bak`;
-  const maxIndex = CONFIG_BACKUP_COUNT - 1;
+  const backupBase = resolveBackupBase(configPath, options);
+  const maxIndex = count - 1;
   await ioFs.unlink(`${backupBase}.${maxIndex}`).catch(() => {
     // best-effort
   });
@@ -44,17 +69,19 @@ export async function rotateConfigBackups(
 export async function hardenBackupPermissions(
   configPath: string,
   ioFs: BackupRotationFs,
+  options?: BackupOptions,
 ): Promise<void> {
   if (!ioFs.chmod) {
     return;
   }
-  const backupBase = `${configPath}.bak`;
+  const count = options?.count ?? 5;
+  const backupBase = resolveBackupBase(configPath, options);
   // Harden the primary .bak
   await ioFs.chmod(backupBase, 0o600).catch(() => {
     // best-effort
   });
   // Harden numbered backups
-  for (let i = 1; i < CONFIG_BACKUP_COUNT; i++) {
+  for (let i = 1; i < count; i++) {
     await ioFs.chmod(`${backupBase}.${i}`, 0o600).catch(() => {
       // best-effort
     });
@@ -72,17 +99,20 @@ export async function hardenBackupPermissions(
 export async function cleanOrphanBackups(
   configPath: string,
   ioFs: BackupRotationFs,
+  options?: BackupOptions,
 ): Promise<void> {
   if (!ioFs.readdir) {
     return;
   }
-  const dir = path.dirname(configPath);
-  const base = path.basename(configPath);
-  const bakPrefix = `${base}.bak.`;
+  const count = options?.count ?? 5;
+  const backupBase = resolveBackupBase(configPath, options);
+  const dir = path.dirname(backupBase);
+  const base = path.basename(backupBase);
+  const bakPrefix = `${base}.`;
 
   // Build the set of valid numbered suffixes: "1", "2", ..., "{N-1}"
   const validSuffixes = new Set<string>();
-  for (let i = 1; i < CONFIG_BACKUP_COUNT; i++) {
+  for (let i = 1; i < count; i++) {
     validSuffixes.add(String(i));
   }
 
@@ -110,16 +140,26 @@ export async function cleanOrphanBackups(
 
 /**
  * Run the full backup maintenance cycle around config writes.
- * Order matters: rotate ring -> create new .bak -> harden modes -> prune orphan .bak.* files.
+ * Order matters: ensure backup dir exists -> rotate ring -> create new .bak -> harden modes -> prune orphan .bak.* files.
  */
 export async function maintainConfigBackups(
   configPath: string,
   ioFs: BackupMaintenanceFs,
+  options?: BackupOptions,
 ): Promise<void> {
-  await rotateConfigBackups(configPath, ioFs);
-  await ioFs.copyFile(configPath, `${configPath}.bak`).catch(() => {
+  // Ensure backup directory exists if custom dir is specified
+  if (options?.dir && ioFs.mkdir) {
+    const resolvedDir = path.resolve(resolveUserPath(options.dir));
+    await ioFs.mkdir(resolvedDir, { recursive: true }).catch(() => {
+      // best-effort
+    });
+  }
+
+  const backupBase = resolveBackupBase(configPath, options);
+  await rotateConfigBackups(configPath, ioFs, options);
+  await ioFs.copyFile(configPath, backupBase).catch(() => {
     // best-effort
   });
-  await hardenBackupPermissions(configPath, ioFs);
-  await cleanOrphanBackups(configPath, ioFs);
+  await hardenBackupPermissions(configPath, ioFs, options);
+  await cleanOrphanBackups(configPath, ioFs, options);
 }

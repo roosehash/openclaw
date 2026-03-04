@@ -177,6 +177,13 @@ export const OpenClawSchema = z
       })
       .strict()
       .optional(),
+    backup: z
+      .object({
+        count: z.number().int().min(1).max(50).optional(),
+        dir: z.string().optional(),
+      })
+      .strict()
+      .optional(),
     env: z
       .object({
         shellEnv: z

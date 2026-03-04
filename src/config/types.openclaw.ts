@@ -35,6 +35,12 @@ export type OpenClawConfig = {
     /** ISO timestamp when this config was last written. */
     lastTouchedAt?: string;
   };
+  backup?: {
+    /** Number of backup files to keep in rotation (1-50). Default: 5. */
+    count?: number;
+    /** Custom directory for backup files. Default: same directory as config file. */
+    dir?: string;
+  };
   auth?: AuthConfig;
   acp?: AcpConfig;
   env?: {

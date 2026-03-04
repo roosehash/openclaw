@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   maintainConfigBackups,
@@ -129,6 +130,69 @@ describe("config backup rotation", () => {
       }
       // Out-of-ring orphan gets pruned.
       await expect(fs.stat(`${configPath}.bak.orphan`)).rejects.toThrow();
+    });
+  });
+
+  it("maintainConfigBackups respects custom backup count", async () => {
+    await withTempHome(async () => {
+      const configPath = resolveConfigPathFromTempState();
+      await fs.writeFile(configPath, "v0", "utf-8");
+
+      // Create 3 backups with count=3
+      for (let i = 1; i <= 4; i++) {
+        await maintainConfigBackups(configPath, fs, { count: 3 });
+        await fs.writeFile(configPath, `v${i}`, "utf-8");
+      }
+
+      // Should have .bak, .bak.1, .bak.2 (count=3 means 3 total backups)
+      await expect(fs.readFile(`${configPath}.bak`, "utf-8")).resolves.toBe("v3");
+      await expect(fs.readFile(`${configPath}.bak.1`, "utf-8")).resolves.toBe("v2");
+      await expect(fs.readFile(`${configPath}.bak.2`, "utf-8")).resolves.toBe("v1");
+      // .bak.3 should not exist (exceeds count=3)
+      await expect(fs.stat(`${configPath}.bak.3`)).rejects.toThrow();
+    });
+  });
+
+  it("maintainConfigBackups uses custom backup directory", async () => {
+    await withTempHome(async () => {
+      const configPath = resolveConfigPathFromTempState();
+      const backupDir = `${configPath}.backups`;
+
+      await fs.writeFile(configPath, "current-config", "utf-8");
+      await maintainConfigBackups(configPath, fs, { dir: backupDir });
+
+      // Backup should be in custom directory, not alongside config
+      const configDir = path.dirname(configPath);
+      const configBasename = path.basename(configPath);
+
+      await expect(fs.stat(`${configDir}/${configBasename}.bak`)).rejects.toThrow();
+      await expect(fs.readFile(`${backupDir}/${configBasename}.bak`, "utf-8")).resolves.toBe(
+        "current-config",
+      );
+    });
+  });
+
+  it("maintainConfigBackups respects both custom count and directory", async () => {
+    await withTempHome(async () => {
+      const configPath = resolveConfigPathFromTempState();
+      const backupDir = `${configPath}.backups`;
+
+      await fs.writeFile(configPath, "v0", "utf-8");
+
+      // Create backups with count=2 in custom directory
+      for (let i = 1; i <= 3; i++) {
+        await maintainConfigBackups(configPath, fs, { count: 2, dir: backupDir });
+        await fs.writeFile(configPath, `v${i}`, "utf-8");
+      }
+
+      const configBasename = path.basename(configPath);
+
+      // Should have only .bak and .bak.1 in custom directory
+      await expect(fs.readFile(`${backupDir}/${configBasename}.bak`, "utf-8")).resolves.toBe("v2");
+      await expect(fs.readFile(`${backupDir}/${configBasename}.bak.1`, "utf-8")).resolves.toBe(
+        "v1",
+      );
+      await expect(fs.stat(`${backupDir}/${configBasename}.bak.2`)).rejects.toThrow();
     });
   });
 });

@@ -1241,7 +1241,7 @@ export function createConfigIO(overrides: ConfigIoDeps = {}) {
       });
 
       if (deps.fs.existsSync(configPath)) {
-        await maintainConfigBackups(configPath, deps.fs.promises);
+        await maintainConfigBackups(configPath, deps.fs.promises, stampedOutputConfig.backup);
       }
 
       try {
