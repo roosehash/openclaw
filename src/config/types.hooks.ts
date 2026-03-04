@@ -146,7 +146,7 @@ import type { InstallRecordBase } from "./types.installs.js";
 export type PostCompactionAuditConfig = {
   /**
    * Enable or disable post-compaction startup file audit.
-   * Default: true.
+   * Default: false (opt-in). Set to true to enable.
    */
   enabled?: boolean;
   /**
