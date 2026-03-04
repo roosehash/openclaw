@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { getResolvedLoggerSettings } from "../../logging.js";
-import { resolveLogPrefix } from "../../logging/logger.js";
+import { extractLogFilePrefix, resolveLogPrefix } from "../../logging/logger.js";
 import { clamp } from "../../utils.js";
 import {
   ErrorCodes,
@@ -37,7 +37,9 @@ async function resolveLogFile(file: string): Promise<string> {
     return file;
   }
 
-  // Only pick files belonging to this profile's prefix to avoid cross-profile log leaks
+  // Only pick files whose prefix exactly matches the current profile.
+  // Use extractLogFilePrefix for exact matching — startsWith() would cause the
+  // default profile ("openclaw") to also match named-profile files like "openclaw-xv-…"
   const profilePrefix = resolveLogPrefix();
   const candidates = await Promise.all(
     entries
@@ -45,7 +47,7 @@ async function resolveLogFile(file: string): Promise<string> {
         (entry) =>
           entry.isFile() &&
           ROLLING_LOG_RE.test(entry.name) &&
-          entry.name.startsWith(`${profilePrefix}-`),
+          extractLogFilePrefix(entry.name) === profilePrefix,
       )
       .map(async (entry) => {
         const fullPath = path.join(dir, entry.name);

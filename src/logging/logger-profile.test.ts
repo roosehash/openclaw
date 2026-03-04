@@ -52,3 +52,34 @@ describe("resolveLogPrefix", () => {
     expect(resolveLogPrefix({ OPENCLAW_PROFILE: "!!!" })).toBe("openclaw");
   });
 });
+
+import { extractLogFilePrefix } from "./logger.js";
+
+describe("extractLogFilePrefix", () => {
+  it("returns 'openclaw' for default profile log file", () => {
+    expect(extractLogFilePrefix("openclaw-2026-03-04.log")).toBe("openclaw");
+  });
+
+  it("returns 'openclaw-xv' for named profile log file", () => {
+    expect(extractLogFilePrefix("openclaw-xv-2026-03-04.log")).toBe("openclaw-xv");
+  });
+
+  it("returns 'openclaw-my-profile' for multi-segment profile", () => {
+    expect(extractLogFilePrefix("openclaw-my-profile-2026-03-04.log")).toBe("openclaw-my-profile");
+  });
+
+  it("returns null for non-rolling log files", () => {
+    expect(extractLogFilePrefix("openclaw.log")).toBeNull();
+    expect(extractLogFilePrefix("openclaw-gateway.log")).toBeNull();
+    expect(extractLogFilePrefix("other-2026-03-04.log")).toBeNull();
+  });
+
+  it("returns null for files with no log suffix", () => {
+    expect(extractLogFilePrefix("openclaw-2026-03-04.txt")).toBeNull();
+  });
+
+  it("default profile does NOT match named-profile log files", () => {
+    // This is the critical regression test: startsWith("openclaw-") would falsely match
+    expect(extractLogFilePrefix("openclaw-xv-2026-03-04.log")).not.toBe("openclaw");
+  });
+});

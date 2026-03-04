@@ -343,6 +343,31 @@ function isRollingPath(file: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(datePart);
 }
 
+/**
+ * Extract the log prefix (profile identifier) from a rolling log filename.
+ * e.g. "openclaw-2026-03-04.log"    → "openclaw"       (default profile)
+ *      "openclaw-xv-2026-03-04.log" → "openclaw-xv"    (named profile)
+ * Returns null if the filename is not a valid rolling log.
+ */
+export function extractLogFilePrefix(filename: string): string | null {
+  const base = path.basename(filename);
+  if (!base.endsWith(LOG_SUFFIX)) {
+    return null;
+  }
+  const withoutSuffix = base.slice(0, -LOG_SUFFIX.length);
+  const datePart = withoutSuffix.slice(-10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(datePart)) {
+    return null;
+  }
+  // Prefix is everything before "-YYYY-MM-DD"
+  const prefix = withoutSuffix.slice(0, -11); // strip "-YYYY-MM-DD"
+  // Only recognize openclaw log files (not arbitrary dated .log files)
+  if (!prefix || !prefix.startsWith(LOG_PREFIX)) {
+    return null;
+  }
+  return prefix;
+}
+
 function pruneOldRollingLogs(dir: string, filePrefix: string): void {
   try {
     const entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -351,9 +376,10 @@ function pruneOldRollingLogs(dir: string, filePrefix: string): void {
       if (!entry.isFile()) {
         continue;
       }
-      // Only prune rolling logs that belong to this profile's prefix (e.g. "openclaw-xv-")
-      // to avoid deleting other profiles' logs.
-      if (!isRollingPath(entry.name) || !entry.name.startsWith(`${filePrefix}-`)) {
+      // Only prune rolling logs that belong exactly to this profile's prefix.
+      // Use extractLogFilePrefix for exact matching — startsWith() would cause the
+      // default profile ("openclaw") to also match named-profile files like "openclaw-xv-…"
+      if (extractLogFilePrefix(entry.name) !== filePrefix) {
         continue;
       }
       const fullPath = path.join(dir, entry.name);
